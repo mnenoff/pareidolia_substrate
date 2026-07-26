@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Pareidolia Substrate — Mind Machine</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style>
+  html,body{margin:0;height:100%;background:#6b6b6b;overflow:hidden;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}
+  canvas{display:block;width:100vw;height:100vh;touch-action:none;cursor:crosshair;}
+  #ui{transition:opacity .5s ease, transform .35s ease;}
+  #ui.dim{opacity:.15;}
+  #ui:hover{opacity:1 !important;}
+  #ui.hidden{opacity:0;pointer-events:none;transform:translateY(12px);}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:13px;background:transparent;width:100%;cursor:ew-resize;}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:rgba(255,255,255,.22);border-radius:2px;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;height:10px;width:10px;margin-top:-4px;border-radius:50%;background:#e8e6e1;box-shadow:0 0 0 1px rgba(0,0,0,.4);}
+  input[type=range]::-moz-range-track{height:2px;background:rgba(255,255,255,.22);border-radius:2px;}
+  input[type=range]::-moz-range-thumb{height:10px;width:10px;border:none;border-radius:50%;background:#e8e6e1;}
+  .grp{letter-spacing:.18em;}
+  #panelBody{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.25) transparent;}
+  #panelBody::-webkit-scrollbar{width:5px;}
+  #panelBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.22);border-radius:3px;}
+  .btn{border:1px solid rgba(255,255,255,.18);}
+  .btn:hover{background:rgba(255,255,255,.12);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui" class="fixed bottom-4 left-4 z-10 w-[284px] select-none text-[11px] text-neutral-200">
+  <div class="rounded-xl border border-white/10 bg-black/55 backdrop-blur-md shadow-2xl">
+    <div class="flex items-center justify-between px-3 py-2 border-b border-white/10">
+      <div class="grp text-[9px] uppercase text-neutral-400">Pareidolia&nbsp;Substrate</div>
+      <button id="collapse" class="btn rounded px-1.5 py-0.5 text-[9px] text-neutral-300">–</button>
+    </div>
+    <div id="panelBody" class="max-h-[66vh] overflow-y-auto px-3 py-2.5"></div>
+    <div class="flex flex-wrap gap-1 border-t border-white/10 px-3 py-2">
+      <button data-preset="inkblot" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Inkblot</button>
+      <button data-preset="mist" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Mist</button>
+      <button data-preset="abyss" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Abyss</button>
+      <button data-preset="tissue" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Tissue</button>
+      <button data-preset="swarm" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Swarm</button>
+      <button id="rnd" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Reseed</button>
+      <button id="pause" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">Pause</button>
+      <button id="save" class="btn rounded px-2 py-1 text-[9px] uppercase tracking-wider">PNG</button>
+    </div>
+    <div class="px-3 pb-2 text-[9px] leading-relaxed text-neutral-500">H hide · Space pause · R reseed · move pointer to gaze</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {antialias:false, preserveDrawingBuffer:true, alpha:false, depth:false, stencil:false, powerPreference:'high-performance', desynchronized:true});
+if(!gl){ document.body.innerHTML = '<div style="color:#eee;font:14px sans-serif;padding:40px">WebGL2 is required for this piece.</div>'; }
+
+/* ============================ SHADERS ============================ */
+const VS_QUAD = `#version 300 es
+void main(){
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const NOISE = `
+vec3 mod289(vec3 x){return x - floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x - floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+float snoise(vec3 v){
+  const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+  vec3 g = step(x0.yzx, x0.xyz);
+  vec3 l = 1.0 - g;
+  vec3 i1 = min(g.xyz, l.zxy);
+  vec3 i2 = max(g.xyz, l.zxy);
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy;
+  vec3 x3 = x0 - D.yyy;
+  i = mod289(i);
+  vec4 p = permute( permute( permute(
+             i.z + vec4(0.0, i1.z, i2.z, 1.0))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+  float n_ = 0.142857142857;
+  vec3 ns = n_ * D.wyz - D.xzx;
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+  vec4 x_ = floor(j * ns.z);
+  vec4 y_ = floor(j - 7.0 * x_);
+  vec4 x = x_ * ns.x + ns.yyyy;
+  vec4 y = y_ * ns.x + ns.yyyy;
+  vec4 h = 1.0 - abs(x) - abs(y);
+  vec4 b0 = vec4(x.xy, y.xy);
+  vec4 b1 = vec4(x.zw, y.zw);
+  vec4 s0 = floor(b0)*2.0 + 1.0;
+  vec4 s1 = floor(b1)*2.0 + 1.0;
+  vec4 sh = -step(h, vec4(0.0));
+  vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+  vec3 p0 = vec3(a0.xy, h.x);
+  vec3 p1 = vec3(a0.zw, h.y);
+  vec3 p2 = vec3(a1.xy, h.z);
+  vec3 p3 = vec3(a1.zw, h.w);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+  m = m * m;
+  return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+}
+mat2 rot(float a){ float s=sin(a), c=cos(a); return mat2(c,-s,s,c); }
+vec3 hsv2rgb(vec3 c){
+  vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
+  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+}
+`;
+
+const FS_MAIN = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform vec2 uRes;
+uniform float uTime, uScale, uWarp, uDetail, uFocus, uContrast, uInk, uBlot,
+              uVeins, uColor, uHue, uPersist, uFlow, uRange, uSeed, uGaze, uChurn,
+              uEchoBlur, uDecayDrift, uLumHold;
+uniform vec2 uMouse;
+uniform sampler2D uPrev;
+${NOISE}
+
+float fbmN(vec2 p, float t, const int oct){
+  float a = 0.5, sum = 0.0, nrm = 0.0, f = 1.0, zf = 1.0;
+  for(int i = 0; i < oct; i++){
+    sum += a * snoise(vec3(p * f, t * zf + float(i) * 11.37 + uSeed));
+    nrm += a;
+    f *= 2.03; zf *= 1.27; a *= 0.55;
+    p = rot(0.61) * p + 0.31;
+  }
+  return sum / max(nrm, 1e-5);
+}
+
+float fbmD(vec2 p, float t, float dAmp){
+  float a = 0.5, sum = 0.0, nrm = 0.0, f = 1.0, zf = 1.0;
+  for(int i = 0; i < 4; i++){
+    sum += a * snoise(vec3(p * f, t * zf + float(i) * 11.37 + uSeed));
+    nrm += a;
+    f *= 2.03; zf *= 1.27; a *= 0.55;
+    p = rot(0.61) * p + 0.31;
+  }
+  for(int i = 4; i < 12; i++){
+    if(a * dAmp < 0.0025) break;
+    sum += a * dAmp * snoise(vec3(p * f, t * zf + float(i) * 11.37 + uSeed));
+    nrm += a * dAmp;
+    f *= 2.03; zf *= 1.27; a *= 0.55;
+    p = rot(0.61) * p + 0.31;
+  }
+  return sum / max(nrm, 1e-5);
+}
+
+float ridged4(vec2 p, float t){
+  float a = 0.5, sum = 0.0, nrm = 0.0, f = 1.0;
+  for(int i = 0; i < 4; i++){
+    float n = 1.0 - abs(snoise(vec3(p * f, t + float(i) * 7.1 + uSeed)));
+    n *= n;
+    sum += a * n; nrm += a;
+    f *= 2.11; a *= 0.55;
+    p = rot(0.9) * p;
+  }
+  return sum / max(nrm, 1e-5);
+}
+
+void main(){
+  vec2 uv01 = gl_FragCoord.xy / uRes;
+  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+  float t = uTime;
+
+  vec2 p = uv * uScale;
+  p += 0.55 * vec2(snoise(vec3(uv * 0.42, t * 0.017 + uSeed)),
+                   snoise(vec3(uv * 0.42 + 7.7, t * 0.015 + uSeed)));
+  p += vec2(t * 0.012, -t * 0.008) * uChurn;
+
+  float mk = 0.5 + 0.5 * fbmN(p * 0.40 + 13.0, t * 0.022, 3);
+  float lo = mix(-1.0, 0.40, uFocus);
+  float hi = mix(-0.35, 0.74, uFocus);
+  float mask = smoothstep(lo, hi, mk);
+  vec2 mUv = (uMouse - 0.5 * uRes) / uRes.y;
+  float gd = length(uv - mUv);
+  mask = clamp(mask + uGaze * exp(-gd * gd * 9.0), 0.0, 1.0);
+  float dAmp = uDetail * mask;
+
+  vec2 q = vec2(fbmN(p, t * 0.10, 4),
+                fbmN(p + vec2(5.2, 1.3), t * 0.085 + 2.3, 4));
+  vec2 r = vec2(fbmN(p + uWarp * q + vec2(1.7, 9.2), t * 0.13, 4),
+                fbmN(p + uWarp * q + vec2(8.3, 2.8), t * 0.115 + 4.1, 4));
+  vec2 pw = p + uWarp * r;
+
+  float base = fbmD(pw, t * 0.055, dAmp);
+
+  float vein = 0.0;
+  if(uVeins > 0.002){
+    float rg = ridged4(pw * 1.7 + 3.0, t * 0.05);
+    vein = pow(clamp(rg, 0.0, 1.0), 3.2) * mask * uVeins;
+  }
+
+  float v = base * uContrast + uInk;
+  float g = 0.5 + 0.5 * tanh(v * 1.6);
+  float e = mix(0.42, 0.012, uBlot);
+  float hard = smoothstep(0.5 - e, 0.5 + e, g);
+  g = mix(g, hard, 0.9 * uBlot);
+
+  float lum = mix(0.06, 0.95, g);
+  lum = 0.5 + (lum - 0.5) * uRange;
+  lum -= vein * 0.30;
+  lum += 0.05 * mask * dAmp * snoise(vec3(pw * 9.0, t * 0.4));
+
+  vec3 rgb = vec3(lum);
+  if(uColor > 0.002){
+    float cf = fbmN(pw * 0.55 + 27.0, t * 0.030, 3);
+    float hf = fbmN(pw * 0.30 + 51.0, t * 0.021, 2);
+    float chroma = smoothstep(0.20, 0.80, 0.5 + 0.5 * cf) * uColor;
+    float hue = fract(uHue + 0.28 * hf + 0.10 * base);
+    vec3 tint = hsv2rgb(vec3(hue, 1.0, 1.0));
+    rgb += (tint - vec3(0.5)) * chroma * 0.62 * (0.30 + 0.70 * lum);
+    rgb += (tint - vec3(0.5)) * vein * chroma * 0.5;
+  }
+  rgb = clamp(rgb, 0.0, 1.0);
+
+  if(uPersist > 0.002 || uEchoBlur > 0.002 || uDecayDrift > 0.002 || uLumHold > 0.002){
+    vec2 flow = (r * 0.0022 + (uv01 - 0.5) * 0.0009) * uFlow;
+    flow += uDecayDrift * 0.004 * vec2(
+      sin(uTime * 0.07 + uv01.y * 3.0),
+      cos(uTime * 0.09 + uv01.x * 3.0)
+    );
+
+    vec2 sampleUV = uv01 - flow;
+    vec3 prev;
+    if(uEchoBlur > 0.002){
+      vec2 px = uEchoBlur * 3.0 / uRes;
+      prev = texture(uPrev, sampleUV).rgb * 0.25
+           + texture(uPrev, sampleUV + vec2(px.x, 0.0)).rgb * 0.125
+           + texture(uPrev, sampleUV - vec2(px.x, 0.0)).rgb * 0.125
+           + texture(uPrev, sampleUV + vec2(0.0, px.y)).rgb * 0.125
+           + texture(uPrev, sampleUV - vec2(0.0, px.y)).rgb * 0.125
+           + texture(uPrev, sampleUV + vec2(px.x, px.y)).rgb * 0.0625
+           + texture(uPrev, sampleUV - vec2(px.x, px.y)).rgb * 0.0625
+           + texture(uPrev, sampleUV + vec2(px.x, -px.y)).rgb * 0.0625
+           + texture(uPrev, sampleUV + vec2(-px.x, px.y)).rgb * 0.0625;
+    } else {
+      prev = texture(uPrev, sampleUV).rgb;
+    }
+
+    float persistAmt = min(uPersist, 1.0) * 0.94 + clamp(uPersist - 1.0, 0.0, 0.5) * 0.116;
+    if(uLumHold > 0.002){
+      float prevLum = dot(prev, vec3(0.299, 0.587, 0.114));
+      persistAmt *= mix(1.0, 0.3 + 1.4 * prevLum, uLumHold);
+    }
+    persistAmt = clamp(persistAmt, 0.0, 0.998);
+    rgb = mix(rgb, prev, persistAmt);
+  }
+  fragColor = vec4(rgb, 1.0);
+}`;
+
+const VS_SHAPE = `#version 300 es
+layout(location=0) in vec3 aA;
+layout(location=1) in vec3 aB;
+layout(location=2) in vec2 aC;
+layout(location=3) in float aFill;
+layout(location=4) in vec4 aSeed;
+
+uniform float uTime, uSize, uSizeVar, uDrift, uSpin, uEvolve, uMorph, uPersp,
+              uThick, uOpacity, uLight, uColAmt, uHue, uCluster, uAspect, uSeedG;
+uniform vec2 uRes;
+out vec3 vCol;
+out float vA;
+out vec2 vEdge;
+${NOISE}
+
+float h11(float p){ return fract(sin(p * 127.1 + uSeedG) * 43758.5453); }
+
+mat3 rot3(vec3 a){
+  float sx=sin(a.x), cx=cos(a.x), sy=sin(a.y), cy=cos(a.y), sz=sin(a.z), cz=cos(a.z);
+  mat3 rx = mat3(1.0,0.0,0.0, 0.0,cx,-sx, 0.0,sx,cx);
+  mat3 ry = mat3(cy,0.0,sy, 0.0,1.0,0.0, -sy,0.0,cy);
+  mat3 rz = mat3(cz,-sz,0.0, sz,cz,0.0, 0.0,0.0,1.0);
+  return rz * ry * rx;
+}
+
+void main(){
+  float s1 = aSeed.x, s2 = aSeed.y, s3 = aSeed.z, s4 = aSeed.w;
+  float t = uTime;
+
+  vec2 upos = vec2(s1 * 2.0 - 1.0, s2 * 2.0 - 1.0);
+  vec2 cc = vec2(h11(floor(s1 * 9.0) * 31.7) * 2.0 - 1.0,
+                 h11(floor(s2 * 9.0) * 57.3) * 2.0 - 1.0);
+  cc += 0.18 * vec2(sin(t * 0.05 + s3 * 6.28), cos(t * 0.043 + s4 * 6.28));
+  vec2 pos = mix(upos, cc + 0.26 * vec2(s3 * 2.0 - 1.0, s4 * 2.0 - 1.0), uCluster);
+  pos.x *= uAspect;
+
+  float ang = s4 * 6.2831;
+  pos += vec2(cos(ang), sin(ang)) * t * 0.010 * uDrift;
+  pos += 0.09 * uDrift * vec2(snoise(vec3(s1 * 13.0, s2 * 7.0, t * 0.06)),
+                              snoise(vec3(s2 * 11.0, s1 * 5.0, t * 0.055 + 9.0)));
+  float ax = uAspect + 0.08;
+  pos.x = mod(pos.x + ax, 2.0 * ax) - ax;
+  pos.y = mod(pos.y + 1.08, 2.16) - 1.08;
+
+  float sc = uSize * mix(1.0, mix(0.28, 2.7, s3 * s3), uSizeVar);
+  sc *= 1.0 + 0.32 * uMorph * sin(t * uEvolve * 0.9 + s4 * 6.28);
+
+  vec3 A = aA, B = aB;
+  float ha = dot(A, vec3(12.99, 78.23, 45.31));
+  float hb = dot(B, vec3(12.99, 78.23, 45.31));
+  A += uMorph * 0.34 * sin(vec3(ha) + t * uEvolve * 0.7 + vec3(0.0, 2.1, 4.2) + s1 * 6.28);
+  B += uMorph * 0.34 * sin(vec3(hb) + t * uEvolve * 0.7 + vec3(0.0, 2.1, 4.2) + s1 * 6.28);
+
+  mat3 R = rot3(t * uSpin * 0.22 * vec3(0.7 + s1, 0.55 + s2, 0.9 + s3)
+                + 6.2831 * vec3(s1, s2, s3));
+  vec3 ra = R * A, rb = R * B;
+  float pfa = 1.0 / (1.0 + uPersp * 0.55 * ra.z);
+  float pfb = 1.0 / (1.0 + uPersp * 0.55 * rb.z);
+  vec2 pa = pos + ra.xy * pfa * sc;
+  vec2 pb = pos + rb.xy * pfb * sc;
+
+  vec2 clipPos;
+  if(aFill > 0.5){
+    clipPos = vec2(pa.x / uAspect, pa.y);
+    vEdge = vec2(0.0, 1000.0);
+  } else {
+    vec2 ca = vec2(pa.x / uAspect, pa.y);
+    vec2 cb = vec2(pb.x / uAspect, pb.y);
+    vec2 Pa = ca * 0.5 * uRes, Pb = cb * 0.5 * uRes;
+    vec2 d = Pb - Pa;
+    float L = max(length(d), 1e-4);
+    vec2 dir = d / L, nn = vec2(-dir.y, dir.x);
+    float thick = max(uThick * uRes.y / 900.0, 0.7);
+    vec2 Pp = mix(Pa, Pb, aC.x) + nn * aC.y * thick * 0.5
+              + dir * (aC.x * 2.0 - 1.0) * thick * 0.25;
+    clipPos = Pp / (0.5 * uRes);
+    vEdge = vec2(aC.y, thick);
+  }
+  gl_Position = vec4(clipPos, 0.0, 1.0);
+
+  float ch = h11(s2 * 13.3 + s3 * 7.7);
+  bool light = ch < uLight;
+  vec3 col = light ? vec3(0.90, 0.90, 0.88) : vec3(0.035, 0.033, 0.04);
+  float cs = h11(s4 * 23.1 + s1 * 3.3);
+  if(cs < uColAmt){
+    float hue = fract(uHue + 0.22 * (s1 - 0.5) + 0.05 * sin(t * 0.05 + s2 * 6.28));
+    col = mix(col, hsv2rgb(vec3(hue, 0.85, light ? 0.95 : 0.55)), 0.88);
+  }
+  vCol = col;
+
+  float depth = 0.5 + 0.5 * ra.z;
+  float fadeX = smoothstep(0.0, 0.10, ax - abs(pos.x));
+  float fadeY = smoothstep(0.0, 0.10, 1.08 - abs(pos.y));
+  float breathe = 0.65 + 0.35 * sin(t * uEvolve * 0.31 + s2 * 6.28);
+  vA = uOpacity * mix(0.45, 1.0, depth) * fadeX * fadeY * mix(1.0, breathe, 0.55);
+}`;
+
+const FS_SHAPE = `#version 300 es
+precision mediump float;
+in vec3 vCol;
+in float vA;
+in vec2 vEdge;
+out vec4 fragColor;
+void main(){
+  float a = vA;
+  if(vEdge.y < 900.0){
+    float aa = clamp(1.6 / vEdge.y, 0.02, 1.0);
+    a *= smoothstep(1.0, 1.0 - aa, abs(vEdge.x));
+  }
+  if(a <= 0.002) discard;
+  fragColor = vec4(vCol, a);
+}`;
+
+const FS_PRESENT = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+uniform sampler2D uTex;
+uniform vec2 uRes;
+uniform float uGrain, uTime, uVig, uSharp;
+// Mind Machine uniforms
+uniform float uMmFlash; // Pulse value multiplied by opacity
+uniform vec3 uMmColor;  // RGB color
+uniform int uMmBlend;   // 0: Add, 1: Mix/Ganzfeld, 2: Screen, 3: Soft Light
+
+float hash(vec2 p){ p = fract(p * vec2(443.897, 441.423)); p += dot(p, p + 19.19); return fract(p.x * p.y); }
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 c = texture(uTex, uv).rgb;
+  if(uSharp > 0.0005){
+    vec2 px = 1.0 / uRes;
+    vec3 blur = (texture(uTex, uv + vec2(px.x, 0)).rgb + texture(uTex, uv - vec2(px.x, 0)).rgb +
+                 texture(uTex, uv + vec2(0, px.y)).rgb + texture(uTex, uv - vec2(0, px.y)).rgb) * 0.25;
+    c = c + (c - blur) * uSharp;
+  }
+  
+  // Grain optimized out completely when set to 0
+  if(uGrain > 0.001){
+    float g = hash(gl_FragCoord.xy + fract(uTime) * 137.0) - 0.5;
+    c += g * 0.055 * uGrain;
+  }
+  
+  // Mind Machine Flash Blending
+  if(uMmFlash > 0.0001){
+    if(uMmBlend == 0){
+      // Add (Luminous Strobe)
+      c = clamp(c + uMmColor * uMmFlash, 0.0, 1.0);
+    } else if(uMmBlend == 1){
+      // Mix (Ganzfeld Cover)
+      c = mix(c, uMmColor, uMmFlash);
+    } else if(uMmBlend == 2){
+      // Screen (Brightening)
+      c = 1.0 - (1.0 - c) * (1.0 - uMmColor * uMmFlash);
+    } else {
+      // Soft Light / Warm Glow
+      vec3 blend = uMmColor * uMmFlash;
+      c = mix(c, c + (2.0 * blend - 1.0) * (c - c * c), uMmFlash);
+    }
+  }
+
+  vec2 d = uv - 0.5;
+  c *= 1.0 - uVig * dot(d, d) * 1.25;
+  fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+
+/* ============================ GL SETUP ============================ */
+function sh(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(p));
+  return p;
+}
+const pMain  = prog(VS_QUAD, FS_MAIN);
+const pPres  = prog(VS_QUAD, FS_PRESENT);
+const pShape = prog(VS_SHAPE, FS_SHAPE);
+const quadVao = gl.createVertexArray();
+
+const hasFloat = !!gl.getExtension('EXT_color_buffer_float');
+let W = 1, H = 1, targets = [];
+function makeTarget(w, h){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  if(hasFloat) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return {tex, fbo};
+}
+
+/* ==================== SHAPE LIBRARY (2D + 3D) ==================== */
+const PHI = (1 + Math.sqrt(5)) / 2;
+function norm(v){ const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; }
+function autoEdges(verts){
+  let min = Infinity;
+  for(let i = 0; i < verts.length; i++) for(let j = i+1; j < verts.length; j++){
+    const d = Math.hypot(verts[i][0]-verts[j][0], verts[i][1]-verts[j][1], verts[i][2]-verts[j][2]);
+    if(d < min) min = d;
+  }
+  const e = [];
+  for(let i = 0; i < verts.length; i++) for(let j = i+1; j < verts.length; j++){
+    const d = Math.hypot(verts[i][0]-verts[j][0], verts[i][1]-verts[j][1], verts[i][2]-verts[j][2]);
+    if(d < min * 1.08) e.push([verts[i], verts[j]]);
+  }
+  return e;
+}
+function polyVerts(n, r = 1, phase = 0, z = 0){
+  const v = [];
+  for(let i = 0; i < n; i++){
+    const a = phase + i / n * Math.PI * 2;
+    v.push([Math.cos(a) * r, Math.sin(a) * r, z]);
+  }
+  return v;
+}
+function loopEdges(v){ return v.map((p, i) => [p, v[(i+1) % v.length]]); }
+function pathEdges(v){ const e = []; for(let i = 0; i < v.length-1; i++) e.push([v[i], v[i+1]]); return e; }
+function fanTris(v){ const t = []; for(let i = 1; i < v.length-1; i++) t.push([v[0], v[i], v[i+1]]); return t; }
+
+const TET = [[1,1,1],[1,-1,-1],[-1,1,-1],[-1,-1,1]].map(norm);
+const CUBE = [];
+for(const x of [-1,1]) for(const y of [-1,1]) for(const z of [-1,1]) CUBE.push(norm([x,y,z]));
+const OCT = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+const ICO = [];
+for(const s1 of [-1,1]) for(const s2 of [-1,1]){
+  ICO.push(norm([0, s1, s2*PHI])); ICO.push(norm([s1, s2*PHI, 0])); ICO.push(norm([s2*PHI, 0, s1]));
+}
+const DOD = [];
+for(const x of [-1,1]) for(const y of [-1,1]) for(const z of [-1,1]) DOD.push(norm([x,y,z]));
+for(const a of [-1,1]) for(const b of [-1,1]){
+  DOD.push(norm([0, a/PHI, b*PHI])); DOD.push(norm([a/PHI, b*PHI, 0])); DOD.push(norm([a*PHI, 0, b/PHI]));
+}
+function helix(turns, pts){
+  const v = [];
+  for(let i = 0; i <= pts; i++){
+    const t = i / pts, a = t * turns * Math.PI * 2;
+    v.push([Math.cos(a) * 0.7, Math.sin(a) * 0.7, t * 2 - 1]);
+  }
+  return v;
+}
+function arc(a0, a1, pts, r){
+  const v = [];
+  for(let i = 0; i <= pts; i++){ const a = a0 + (a1 - a0) * i / pts; v.push([Math.cos(a)*r, Math.sin(a)*r, 0]); }
+  return v;
+}
+function star(n, r1, r2){
+  const v = [];
+  for(let i = 0; i < n*2; i++){
+    const a = i / (n*2) * Math.PI * 2 + Math.PI/2, r = i % 2 ? r2 : r1;
+    v.push([Math.cos(a)*r, Math.sin(a)*r, 0]);
+  }
+  return v;
+}
+function gridPlane(n){
+  const e = [];
+  for(let i = 0; i <= n; i++){
+    const u = -1 + 2 * i / n;
+    e.push([[u,-1,0],[u,1,0]]); e.push([[-1,u,0],[1,u,0]]);
+  }
+  return e;
+}
+
+const TYPES = [
+  {n:'segment',   edges:[[[-1,0,0],[1,0,0]]], w:1.2},
+  {n:'tri',       edges:loopEdges(polyVerts(3)), w:1.3},
+  {n:'triFill',   tris:fanTris(polyVerts(3)), w:0.7},
+  {n:'square',    edges:loopEdges(polyVerts(4, 1, Math.PI/4)), w:1.1},
+  {n:'quadFill',  tris:fanTris(polyVerts(4, 1, Math.PI/4)), w:0.6},
+  {n:'penta',     edges:loopEdges(polyVerts(5)), w:0.8},
+  {n:'hexa',      edges:loopEdges(polyVerts(6)), w:0.8},
+  {n:'dot',       tris:fanTris(polyVerts(7, 0.45)), w:0.9},
+  {n:'ring',      edges:loopEdges(polyVerts(14)), w:0.6},
+  {n:'star',      edges:loopEdges(star(5, 1, 0.42)), w:0.6},
+  {n:'cross',     edges:[[[-1,0,0],[1,0,0]], [[0,-1,0],[0,1,0]]], w:0.9},
+  {n:'chevron',   edges:pathEdges([[-1,-0.6,0],[0,0.7,0],[1,-0.6,0]]), w:0.8},
+  {n:'arc',       edges:pathEdges(arc(0.3, 3.6, 9, 1)), w:0.7},
+  {n:'axes3',     edges:[[[-1,0,0],[1,0,0]], [[0,-1,0],[0,1,0]], [[0,0,-1],[0,0,1]]], d3:true, w:0.8},
+  {n:'plane3',    edges:gridPlane(3), d3:true, w:0.5},
+  {n:'planeFill', tris:fanTris(polyVerts(4, 1, Math.PI/4)), d3:true, w:0.4},
+  {n:'tetra',     edges:autoEdges(TET), d3:true, w:1.0},
+  {n:'cube',      edges:autoEdges(CUBE), d3:true, w:1.0},
+  {n:'octa',      edges:autoEdges(OCT), d3:true, w:0.9},
+  {n:'icosa',     edges:autoEdges(ICO), d3:true, w:0.6},
+  {n:'dodeca',    edges:autoEdges(DOD), d3:true, w:0.7},
+  {n:'helix',     edges:pathEdges(helix(1.7, 14)), d3:true, w:0.5},
+];
+
+const MAXPER = 1000;
+const TOTAL_INST = TYPES.length * MAXPER;
+
+const instBuf = gl.createBuffer();
+const instData = new Float32Array(TOTAL_INST * 4);
+function reseedInstances(){
+  for(let i = 0; i < instData.length; i++) instData[i] = Math.random();
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, instData, gl.STATIC_DRAW);
+}
+reseedInstances();
+
+const CORNERS = [[0,-1],[1,-1],[1,1],[0,-1],[1,1],[0,1]];
+TYPES.forEach((T, idx) => {
+  const arr = [];
+  const push = (a, b, c, f) => arr.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1], f);
+  (T.edges || []).forEach(([a, b]) => CORNERS.forEach(c => push(a, b, c, 0)));
+  (T.tris || []).forEach(tri => tri.forEach(v => push(v, v, [0,0], 1)));
+  T.count = arr.length / 9;
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const st = 36;
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, st, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, st, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, st, 24);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 1, gl.FLOAT, false, st, 32);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.enableVertexAttribArray(4);
+  gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 16, idx * MAXPER * 16);
+  gl.vertexAttribDivisor(4, 1);
+  gl.bindVertexArray(null);
+  T.vao = vao;
+});
+
+/* ============================ PARAMETERS ============================ */
+const P = [
+  {g:'Motion',   k:'speed',       n:'Time flow',      min:0,    max:1,    v:0.09, js:true},
+  {g:'Motion',   k:'uPersist',    n:'Persistence',    min:0,    max:1.5,  v:1.00},
+  {g:'Motion',   k:'uEchoBlur',   n:'Echo blur',      min:0,    max:1,    v:0.00},
+  {g:'Motion',   k:'uDecayDrift', n:'Decay drift',    min:0,    max:1,    v:0.00},
+  {g:'Motion',   k:'uLumHold',    n:'Luminance hold', min:0,    max:1,    v:0.00},
+  {g:'Motion',   k:'uFlow',       n:'Drift',          min:0,    max:2,    v:0.55},
+  {g:'Motion',   k:'uChurn',      n:'Wander',         min:0,    max:2,    v:0.60},
+  {g:'Field',    k:'uScale',      n:'Zoom',           min:0.6,  max:7,    v:2.30},
+  {g:'Field',    k:'uWarp',       n:'Warp',           min:0,    max:4,    v:1.85},
+  {g:'Detail',   k:'uDetail',     n:'Fine detail',    min:0,    max:1,    v:0.85},
+  {g:'Detail',   k:'uFocus',      n:'Detail focus',   min:0,    max:1,    v:0.72},
+  {g:'Detail',   k:'uVeins',      n:'Veins',          min:0,    max:1,    v:0.35},
+  {g:'Detail',   k:'uGaze',       n:'Gaze reveal',    min:0,    max:1,    v:0.45},
+  {g:'Tone',     k:'uContrast',   n:'Contrast',       min:0.2,  max:4,    v:1.45},
+  {g:'Tone',     k:'uInk',        n:'Ink / light',    min:-0.6, max:0.6,  v:-0.02},
+  {g:'Tone',     k:'uBlot',       n:'Blot edge',      min:0,    max:1,    v:0.32},
+  {g:'Tone',     k:'uRange',      n:'Greyness',       min:0.05, max:1.5,  v:0.78},
+  {g:'Colour',   k:'uColor',      n:'Colour',         min:0,    max:1,    v:0.30},
+  {g:'Colour',   k:'uHue',        n:'Hue',            min:0,    max:1,    v:0.55},
+  {g:'Geometry', k:'gCount',      n:'Population',     min:0,    max:10,   v:1.00, js:true},
+  {g:'Geometry', k:'gMix3D',      n:'2D ◂▸ 3D',       min:0,    max:1,    v:0.50, js:true},
+  {g:'Geometry', k:'gSize',       n:'Avg size',       min:0.002,max:0.09, v:0.016},
+  {g:'Geometry', k:'gSizeVar',    n:'Size variety',   min:0,    max:1,    v:0.70},
+  {g:'Geometry', k:'gDrift',      n:'Travel speed',   min:0,    max:3,    v:0.55},
+  {g:'Geometry', k:'gSpin',       n:'Spin speed',     min:0,    max:3,    v:0.45},
+  {g:'Geometry', k:'gEvolve',     n:'Evolve speed',   min:0,    max:3,    v:0.55},
+  {g:'Geometry', k:'gMorph',      n:'Morph amount',   min:0,    max:1,    v:0.22},
+  {g:'Geometry', k:'gPersp',      n:'Perspective',    min:0,    max:2,    v:0.85},
+  {g:'Geometry', k:'gThick',      n:'Line weight',    min:0.4,  max:4,    v:1.10},
+  {g:'Geometry', k:'gOpacity',    n:'Ink opacity',    min:0,    max:1,    v:0.62},
+  {g:'Geometry', k:'gLight',      n:'Light / dark',   min:0,    max:1,    v:0.14},
+  {g:'Geometry', k:'gColAmt',     n:'Coloured share', min:0,    max:1,    v:0.16},
+  {g:'Geometry', k:'gHue',        n:'Shape hue',      min:0,    max:1,    v:0.06},
+  {g:'Geometry', k:'gCluster',    n:'Clustering',     min:0,    max:1,    v:0.00},
+  // Grain defaulted to OFF (0.00) so it consumes zero processing power unless turned back on!
+  {g:'Surface',  k:'uGrain',      n:'Grain',          min:0,    max:1,    v:0.00},
+  {g:'Surface',  k:'uSharp',      n:'Bite',           min:0,    max:1.2,  v:0.35},
+  {g:'Surface',  k:'uVig',        n:'Vignette',       min:0,    max:1,    v:0.54},
+  {g:'Surface',  k:'res',         n:'Resolution',     min:0.35, max:1.4,  v:1.40, js:true},
+];
+const S = {}; P.forEach(p => S[p.k] = p.v);
+let seed = Math.random() * 100, gSeed = Math.random() * 100;
+let dirty = true;
+
+/* ==================== MIND MACHINE STATE & AUDIO ==================== */
+const MM = {
+  active: true,            // Active by default for immediate perceptible flashing
+  freq: 5.0,               // 5.0 Hz Theta
+  opacity: 0.74,           // 74% opacity by default, max 1.0 (SUPER VISIBLE)
+  color: [1.0, 1.0, 1.0],  // White color
+  hexColor: '#ffffff',
+  wave: 'strobe',          // Sine, Strobe, Triangle, Soft Pulse
+  blend: 3,                // 0: Add (Luminous), 1: Mix (Ganzfeld), 2: Screen, 3: Soft Light
+  soundType: 'isochronic', // Isochronic, Binaural, Monaural, Pink Noise, Drone, Off
+  vol: 0.05,               // 5% volume
+  pitch: 147               // 147 Hz carrier tone
+};
+
+let audioCtx = null;
+let mmMasterGain = null;
+let mmNodes = [];
+let audioInitDone = false;
+
+function initAudio(){
+  if(audioCtx) {
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new AudioContext();
+  mmMasterGain = audioCtx.createGain();
+  mmMasterGain.gain.value = MM.vol;
+  mmMasterGain.connect(audioCtx.destination);
+}
+
+function stopMmAudio(){
+  mmNodes.forEach(n => {
+    try { if(n.stop) n.stop(); n.disconnect(); } catch(e){}
+  });
+  mmNodes = [];
+}
+
+function updateMmAudio(){
+  if(!MM.active || MM.soundType === 'off'){
+    stopMmAudio();
+    return;
+  }
+  initAudio();
+  if(!mmMasterGain) return;
+  mmMasterGain.gain.setTargetAtTime(MM.vol, audioCtx.currentTime, 0.05);
+
+  if(mmNodes.type !== MM.soundType){
+    stopMmAudio();
+    mmNodes.type = MM.soundType;
+    mmNodes.oscList = [];
+    
+    if(MM.soundType === 'binaural' || MM.soundType === 'monaural'){
+      const oscL = audioCtx.createOscillator();
+      const oscR = audioCtx.createOscillator();
+      const panL = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+      const panR = audioCtx.createStereoPanner ? audioCtx.createStereoPanner() : null;
+      const gainL = audioCtx.createGain();
+      const gainR = audioCtx.createGain();
+      gainL.gain.value = 0.5; gainR.gain.value = 0.5;
+      
+      oscL.type = 'sine'; oscR.type = 'sine';
+      if(panL && panR && MM.soundType === 'binaural'){
+        panL.pan.value = -1; panR.pan.value = 1;
+        oscL.connect(panL); panL.connect(gainL);
+        oscR.connect(panR); panR.connect(gainR);
+      } else {
+        oscL.connect(gainL); oscR.connect(gainR);
+      }
+      const modGain = audioCtx.createGain();
+      modGain.gain.value = 1.0;
+      gainL.connect(modGain); gainR.connect(modGain);
+      modGain.connect(mmMasterGain);
+      oscL.start(); oscR.start();
+      mmNodes.push(oscL, oscR, gainL, gainR, modGain);
+      if(panL) mmNodes.push(panL, panR);
+      mmNodes.modGain = modGain;
+      mmNodes.oscList.push({osc: oscL, ratio: 1.0, isLeft: true}, {osc: oscR, ratio: 1.0, isRight: true});
+    } 
+    else if(MM.soundType === 'isochronic'){
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const osc3 = audioCtx.createOscillator();
+      const isoGain = audioCtx.createGain();
+      isoGain.gain.value = 0.0;
+      osc1.type = 'sine'; osc2.type = 'sine'; osc3.type = 'triangle';
+      const g1 = audioCtx.createGain(); g1.gain.value = 0.5;
+      const g2 = audioCtx.createGain(); g2.gain.value = 0.3;
+      const g3 = audioCtx.createGain(); g3.gain.value = 0.2;
+      osc1.connect(g1); osc2.connect(g2); osc3.connect(g3);
+      g1.connect(isoGain); g2.connect(isoGain); g3.connect(isoGain);
+      isoGain.connect(mmMasterGain);
+      osc1.start(); osc2.start(); osc3.start();
+      mmNodes.push(osc1, osc2, osc3, g1, g2, g3, isoGain);
+      mmNodes.modGain = isoGain;
+      mmNodes.oscList.push({osc: osc1, ratio: 1.0}, {osc: osc2, ratio: 1.5}, {osc: osc3, ratio: 2.0});
+    }
+    else if(MM.soundType === 'harmonic'){
+      // Tibetan Singing Bowl / Bell Chime resonance (1.0, 1.5, 2.0, 2.618 golden ratio)
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const osc3 = audioCtx.createOscillator();
+      const osc4 = audioCtx.createOscillator();
+      const bowlGain = audioCtx.createGain();
+      bowlGain.gain.value = 0.0;
+      osc1.type = 'sine'; osc2.type = 'sine'; osc3.type = 'sine'; osc4.type = 'triangle';
+      const g1 = audioCtx.createGain(); g1.gain.value = 0.45;
+      const g2 = audioCtx.createGain(); g2.gain.value = 0.25;
+      const g3 = audioCtx.createGain(); g3.gain.value = 0.18;
+      const g4 = audioCtx.createGain(); g4.gain.value = 0.12;
+      osc1.connect(g1); osc2.connect(g2); osc3.connect(g3); osc4.connect(g4);
+      g1.connect(bowlGain); g2.connect(bowlGain); g3.connect(bowlGain); g4.connect(bowlGain);
+      bowlGain.connect(mmMasterGain);
+      osc1.start(); osc2.start(); osc3.start(); osc4.start();
+      mmNodes.push(osc1, osc2, osc3, osc4, g1, g2, g3, g4, bowlGain);
+      mmNodes.modGain = bowlGain;
+      mmNodes.oscList.push({osc: osc1, ratio: 1.0}, {osc: osc2, ratio: 1.5}, {osc: osc3, ratio: 2.0}, {osc: osc4, ratio: 2.618});
+    }
+    else if(MM.soundType === 'chords'){
+      // Warm Ambient Pad / Triad (1.0, 1.25 major 3rd, 1.5 fifth, 2.0 octave)
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const osc3 = audioCtx.createOscillator();
+      const osc4 = audioCtx.createOscillator();
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 750;
+      const chordGain = audioCtx.createGain();
+      chordGain.gain.value = 0.0;
+      osc1.type = 'triangle'; osc2.type = 'sine'; osc3.type = 'sine'; osc4.type = 'sine';
+      osc1.connect(filter); osc2.connect(filter); osc3.connect(filter); osc4.connect(filter);
+      filter.connect(chordGain); chordGain.connect(mmMasterGain);
+      osc1.start(); osc2.start(); osc3.start(); osc4.start();
+      mmNodes.push(osc1, osc2, osc3, osc4, filter, chordGain);
+      mmNodes.modGain = chordGain;
+      mmNodes.oscList.push({osc: osc1, ratio: 1.0}, {osc: osc2, ratio: 1.25}, {osc: osc3, ratio: 1.5}, {osc: osc4, ratio: 2.0});
+    }
+    else if(MM.soundType === 'surf'){
+      // Deep Ocean Surf (Brown Noise Wave with sweeping filter)
+      const bufSize = audioCtx.sampleRate * 3;
+      const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      let lastOut = 0.0;
+      for (let i = 0; i < bufSize; i++) {
+        const white = Math.random() * 2 - 1;
+        lastOut = (lastOut * 0.985) + (white * 0.015);
+        data[i] = lastOut * 4.5;
+      }
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buf; noise.loop = true;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 250; filter.Q.value = 1.0;
+      const surfGain = audioCtx.createGain();
+      surfGain.gain.value = 0.0;
+      noise.connect(filter); filter.connect(surfGain); surfGain.connect(mmMasterGain);
+      noise.start();
+      mmNodes.push(noise, filter, surfGain);
+      mmNodes.modGain = surfGain;
+      mmNodes.filter = filter;
+    }
+    else if(MM.soundType === 'pink'){
+      // Pulsed Ocean Noise (Pink Noise Surf)
+      const bufSize = audioCtx.sampleRate * 3;
+      const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      let lastOut = 0.0;
+      for (let i = 0; i < bufSize; i++) {
+        const white = Math.random() * 2 - 1;
+        lastOut = (lastOut * 0.95) + (white * 0.05);
+        data[i] = lastOut * 3.0;
+      }
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buf; noise.loop = true;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 400;
+      const noiseGain = audioCtx.createGain();
+      noiseGain.gain.value = 0.0;
+      noise.connect(filter); filter.connect(noiseGain); noiseGain.connect(mmMasterGain);
+      noise.start();
+      mmNodes.push(noise, filter, noiseGain);
+      mmNodes.modGain = noiseGain;
+    }
+    else if(MM.soundType === 'pulse_synth'){
+      // Resonant Cyber Pulse (Kasina / Proteus style sawtooth with resonant filter sweep)
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 400; filter.Q.value = 3.5;
+      const synthGain = audioCtx.createGain();
+      synthGain.gain.value = 0.0;
+      osc1.type = 'sawtooth'; osc2.type = 'triangle';
+      osc1.connect(filter); osc2.connect(filter);
+      filter.connect(synthGain); synthGain.connect(mmMasterGain);
+      osc1.start(); osc2.start();
+      mmNodes.push(osc1, osc2, filter, synthGain);
+      mmNodes.modGain = synthGain;
+      mmNodes.filter = filter;
+      mmNodes.oscList.push({osc: osc1, ratio: 1.0}, {osc: osc2, ratio: 0.5});
+    }
+    else if(MM.soundType === 'drone'){
+      // Meditative Drone (Deep Swell)
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const osc3 = audioCtx.createOscillator();
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 350; filter.Q.value = 2.5;
+      const droneGain = audioCtx.createGain();
+      droneGain.gain.value = 0.0;
+      osc1.type = 'sawtooth'; osc2.type = 'sine'; osc3.type = 'triangle';
+      osc1.connect(filter); osc2.connect(filter); osc3.connect(filter);
+      filter.connect(droneGain); droneGain.connect(mmMasterGain);
+      osc1.start(); osc2.start(); osc3.start();
+      mmNodes.push(osc1, osc2, osc3, filter, droneGain);
+      mmNodes.modGain = droneGain;
+      mmNodes.oscList.push({osc: osc1, ratio: 0.5}, {osc: osc2, ratio: 1.0}, {osc: osc3, ratio: 1.498});
+    }
+  }
+
+  if(mmNodes.oscList && audioCtx){
+    const now = audioCtx.currentTime;
+    const half = (MM.soundType === 'binaural' || MM.soundType === 'monaural') ? (MM.freq / 2) : 0;
+    mmNodes.oscList.forEach(item => {
+      let freq = MM.pitch * item.ratio;
+      if(item.isLeft) freq -= half;
+      if(item.isRight) freq += half;
+      item.osc.frequency.setTargetAtTime(Math.max(20, freq), now, 0.05);
+    });
+  }
+}
+
+function getMmPulse(t){
+  if(!MM.active) return 0.0;
+  const phase = (t * MM.freq) % 1.0;
+  let val = 0.0;
+  if(MM.wave === 'sine'){
+    val = 0.5 - 0.5 * Math.cos(phase * Math.PI * 2.0);
+  } else if(MM.wave === 'strobe'){
+    val = phase < 0.5 ? 1.0 : 0.0;
+  } else if(MM.wave === 'triangle'){
+    val = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
+  } else if(MM.wave === 'pulse'){
+    val = Math.pow(0.5 - 0.5 * Math.cos(phase * Math.PI * 2.0), 2.5);
+  }
+  return val;
+}
+
+function handleFirstUserGesture(){
+  if(audioInitDone) return;
+  audioInitDone = true;
+  if(MM.active && MM.soundType !== 'off'){
+    updateMmAudio();
+  }
+}
+addEventListener('pointerdown', handleFirstUserGesture, {once: true});
+addEventListener('keydown', handleFirstUserGesture, {once: true});
+
+/* ============================ UI & AUTO-HIDE ============================ */
+const body = document.getElementById('panelBody');
+
+// Auto-hide time halved to 2000ms (disappears on first load or after adjustment)
+let idleTimer;
+function poke(){ 
+  const uiEl = document.getElementById('ui');
+  if(uiEl){
+    uiEl.classList.remove('dim'); 
+    clearTimeout(idleTimer); 
+    idleTimer = setTimeout(() => uiEl.classList.add('dim'), 2000); 
+  }
+}
+addEventListener('mousemove', poke); addEventListener('mousedown', poke);
+
+// Build Mind Machine UI at the very top of panelBody
+function buildMindMachineUI(){
+  const mmDiv = document.createElement('div');
+  mmDiv.className = 'mb-3 pb-3 border-b border-white/15';
+  mmDiv.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <div class="flex items-center gap-1.5">
+        <span class="text-[10px] font-bold tracking-widest uppercase text-amber-400 flex items-center gap-1">
+          <span id="mmStatusDot" class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+          Mind Machine
+        </span>
+      </div>
+      <button id="mmToggleBtn" class="btn rounded px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider bg-amber-500/25 text-amber-300 border-amber-500/40 hover:bg-amber-500/35 transition-all">
+        Turn Off
+      </button>
+    </div>
+
+    <div id="mmControls" class="space-y-2 text-[10px] text-neutral-300 transition-opacity">
+      <!-- Frequency -->
+      <div>
+        <div class="flex justify-between mb-0.5">
+          <span>Frequency</span>
+          <span id="mmFreqVal" class="font-semibold text-amber-300">5.0 Hz (Theta)</span>
+        </div>
+        <input type="range" id="mmFreq" min="0.5" max="40" step="0.1" value="5.0">
+        <div class="flex justify-between gap-1 mt-1">
+          <button class="mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-neutral-400 hover:text-white" data-freq="2.5">Delta</button>
+          <button class="mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-amber-300 border-amber-500/40 font-semibold bg-amber-500/10" data-freq="5.0">Theta</button>
+          <button class="mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-neutral-400 hover:text-white" data-freq="10">Alpha</button>
+          <button class="mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-neutral-400 hover:text-white" data-freq="15">Beta</button>
+          <button class="mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-neutral-400 hover:text-white" data-freq="40">Gamma</button>
+        </div>
+      </div>
+
+      <!-- Opacity / Intensity -->
+      <div>
+        <div class="flex justify-between mb-0.5">
+          <span>Flash Opacity</span>
+          <span id="mmOpacityVal" class="tabular-nums text-neutral-400">0.74</span>
+        </div>
+        <input type="range" id="mmOpacity" min="0" max="1" step="0.01" value="0.74">
+        <div class="flex justify-between text-[7.5px] text-neutral-500 px-0.5 mt-0.5">
+          <span>Subtle</span>
+          <span class="text-amber-400/80 font-medium">SUPER VISIBLE</span>
+        </div>
+      </div>
+
+      <!-- Waveform & Blend Mode -->
+      <div class="grid grid-cols-2 gap-1.5 pt-0.5">
+        <div>
+          <label class="block text-[8.5px] text-neutral-400 mb-0.5 uppercase tracking-wider">Waveform</label>
+          <select id="mmWave" class="w-full bg-black/60 border border-white/15 rounded px-1.5 py-1 text-[9px] text-neutral-200 focus:outline-none focus:border-amber-500/50">
+            <option value="sine">Sine (Smooth)</option>
+            <option value="strobe" selected>Strobe (Sharp)</option>
+            <option value="triangle">Triangle</option>
+            <option value="pulse">Soft Pulse</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[8.5px] text-neutral-400 mb-0.5 uppercase tracking-wider">Blend Mode</label>
+          <select id="mmBlend" class="w-full bg-black/60 border border-white/15 rounded px-1.5 py-1 text-[9px] text-neutral-200 focus:outline-none focus:border-amber-500/50">
+            <option value="0">Add (Luminous)</option>
+            <option value="1">Mix (Ganzfeld)</option>
+            <option value="2">Screen (Bright)</option>
+            <option value="3" selected>Soft Light</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Color -->
+      <div class="pt-0.5">
+        <div class="flex items-center justify-between mb-1">
+          <span>Flash Color</span>
+          <div class="flex items-center gap-1.5" id="mmColorSwatches">
+            <button class="mm-col w-3.5 h-3.5 rounded-full border-2 border-white bg-[#ffffff] shadow-sm" data-color="#ffffff" title="White (Default)"></button>
+            <button class="mm-col w-3.5 h-3.5 rounded-full border border-white/20 bg-[#ff2222] hover:border-white/60 transition-colors" data-color="#ff2222" title="Ganzfeld Red"></button>
+            <button class="mm-col w-3.5 h-3.5 rounded-full border border-white/20 bg-[#00ddff] hover:border-white/60 transition-colors" data-color="#00ddff" title="Cyan"></button>
+            <button class="mm-col w-3.5 h-3.5 rounded-full border border-white/20 bg-[#bb33ff] hover:border-white/60 transition-colors" data-color="#bb33ff" title="Purple"></button>
+            <button class="mm-col w-3.5 h-3.5 rounded-full border border-white/20 bg-[#ffaa00] hover:border-white/60 transition-colors" data-color="#ffaa00" title="Gold"></button>
+            <button class="mm-col w-3.5 h-3.5 rounded-full border border-white/20 bg-[#22ff66] hover:border-white/60 transition-colors" data-color="#22ff66" title="Green"></button>
+            <div class="relative flex items-center justify-center w-4 h-4 rounded border border-white/30 overflow-hidden cursor-pointer ml-0.5 bg-gradient-to-tr from-red-500 via-green-500 to-blue-500" title="Custom Color">
+              <input type="color" id="mmColor" value="#ffffff" class="absolute -inset-2 w-8 h-8 opacity-0 cursor-pointer">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Audio Entrainment -->
+      <div class="pt-2 border-t border-white/10 mt-2">
+        <div class="flex justify-between items-center mb-1.5">
+          <span class="font-medium text-neutral-200">Sound Entrainment</span>
+          <select id="mmSoundType" class="bg-black/60 border border-white/15 rounded px-1.5 py-1 text-[9px] text-amber-300 focus:outline-none focus:border-amber-500/50">
+            <option value="isochronic" selected>Isochronic Tones (Crisp & Accurate)</option>
+            <option value="harmonic">Tibetan Singing Bowl (Resonant)</option>
+            <option value="surf">Deep Ocean Surf (Brown Noise Wave)</option>
+            <option value="chords">Warm Ambient Pad (Harmonic Triad)</option>
+            <option value="binaural">Binaural Beats (Headphones Required)</option>
+            <option value="monaural">Monaural Beats (Natural Acoustic Beat)</option>
+            <option value="pink">Pulsed Ocean Noise (Pink Noise Surf)</option>
+            <option value="pulse_synth">Resonant Cyber Pulse (Kasina Style)</option>
+            <option value="drone">Meditative Drone (Deep Swell)</option>
+            <option value="off">Off / Mute</option>
+          </select>
+        </div>
+        
+        <div id="mmAudioControls" class="space-y-1.5">
+          <div class="flex items-center gap-2">
+            <span class="text-[9px] text-neutral-400 w-11">Volume</span>
+            <input type="range" id="mmVol" min="0" max="1" step="0.01" value="0.05" class="flex-1">
+            <span id="mmVolVal" class="text-[9px] tabular-nums text-neutral-400 w-7 text-right">5%</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-[9px] text-neutral-400 w-11" title="Carrier tone frequency (Hz)">Pitch</span>
+            <input type="range" id="mmPitch" min="60" max="528" step="1" value="147" class="flex-1">
+            <span id="mmPitchVal" class="text-[9px] tabular-nums text-neutral-400 w-10 text-right">147 Hz</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  body.appendChild(mmDiv);
+
+  function getBandName(f){
+    if(f < 4.0) return 'Delta';
+    if(f < 8.0) return 'Theta';
+    if(f < 12.0) return 'Alpha';
+    if(f < 30.0) return 'Beta';
+    return 'Gamma';
+  }
+
+  const toggleBtn = document.getElementById('mmToggleBtn');
+  const statusDot = document.getElementById('mmStatusDot');
+  const controlsDiv = document.getElementById('mmControls');
+
+  function setMmActive(act){
+    MM.active = act;
+    if(MM.active){
+      toggleBtn.textContent = 'Turn Off';
+      toggleBtn.className = 'btn rounded px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider bg-amber-500/25 text-amber-300 border-amber-500/40 hover:bg-amber-500/35 transition-all';
+      statusDot.className = 'inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+      controlsDiv.classList.remove('opacity-40', 'pointer-events-none');
+      updateMmAudio();
+    } else {
+      toggleBtn.textContent = 'Turn On';
+      toggleBtn.className = 'btn rounded px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider bg-white/10 text-neutral-300 hover:text-white transition-all';
+      statusDot.className = 'inline-block w-2 h-2 rounded-full bg-neutral-600';
+      controlsDiv.classList.add('opacity-40', 'pointer-events-none');
+      stopMmAudio();
+    }
+    poke();
+  }
+
+  toggleBtn.addEventListener('click', () => setMmActive(!MM.active));
+
+  const freqInp = document.getElementById('mmFreq');
+  const freqVal = document.getElementById('mmFreqVal');
+  const presetBtns = document.querySelectorAll('.mm-preset');
+  
+  function updateFreqDisplay(){
+    const band = getBandName(MM.freq);
+    freqVal.textContent = `${MM.freq.toFixed(1)} Hz (${band})`;
+    presetBtns.forEach(b => {
+      const bf = parseFloat(b.dataset.freq);
+      if(Math.abs(bf - MM.freq) < 0.05){
+        b.className = 'mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-amber-300 border-amber-500/40 font-semibold bg-amber-500/10';
+      } else {
+        b.className = 'mm-preset btn flex-1 rounded py-0.5 text-[7.5px] text-neutral-400 hover:text-white';
+      }
+    });
+  }
+
+  freqInp.addEventListener('input', () => {
+    MM.freq = parseFloat(freqInp.value);
+    updateFreqDisplay();
+    updateMmAudio();
+    poke();
+  });
+
+  presetBtns.forEach(b => {
+    b.addEventListener('click', () => {
+      MM.freq = parseFloat(b.dataset.freq);
+      freqInp.value = MM.freq;
+      updateFreqDisplay();
+      updateMmAudio();
+      poke();
+    });
+  });
+
+  const opInp = document.getElementById('mmOpacity');
+  const opVal = document.getElementById('mmOpacityVal');
+  opInp.addEventListener('input', () => {
+    MM.opacity = parseFloat(opInp.value);
+    opVal.textContent = MM.opacity.toFixed(2);
+    poke();
+  });
+
+  document.getElementById('mmWave').addEventListener('change', e => {
+    MM.wave = e.target.value;
+    poke();
+  });
+  document.getElementById('mmBlend').addEventListener('change', e => {
+    MM.blend = parseInt(e.target.value, 10);
+    poke();
+  });
+
+  const swatches = document.querySelectorAll('.mm-col');
+  const colorInp = document.getElementById('mmColor');
+  function hexToRgb(hex){
+    const bigint = parseInt(hex.slice(1), 16);
+    return [((bigint >> 16) & 255) / 255, ((bigint >> 8) & 255) / 255, (bigint & 255) / 255];
+  }
+  function setMmColor(hex){
+    MM.hexColor = hex;
+    MM.color = hexToRgb(hex);
+    colorInp.value = hex;
+    swatches.forEach(s => {
+      if(s.dataset.color.toLowerCase() === hex.toLowerCase()){
+        s.className = 'mm-col w-3.5 h-3.5 rounded-full border-2 border-white bg-[' + s.dataset.color + '] shadow-sm';
+      } else {
+        s.className = 'mm-col w-3.5 h-3.5 rounded-full border border-white/20 bg-[' + s.dataset.color + '] hover:border-white/60 transition-colors';
+      }
+    });
+    poke();
+  }
+  swatches.forEach(s => s.addEventListener('click', () => setMmColor(s.dataset.color)));
+  colorInp.addEventListener('input', e => setMmColor(e.target.value));
+
+  const soundSelect = document.getElementById('mmSoundType');
+  const audioControlsDiv = document.getElementById('mmAudioControls');
+  soundSelect.addEventListener('change', e => {
+    MM.soundType = e.target.value;
+    if(MM.soundType === 'off'){
+      audioControlsDiv.classList.add('opacity-40', 'pointer-events-none');
+    } else {
+      audioControlsDiv.classList.remove('opacity-40', 'pointer-events-none');
+    }
+    updateMmAudio();
+    poke();
+  });
+
+  const volInp = document.getElementById('mmVol');
+  const volVal = document.getElementById('mmVolVal');
+  volInp.addEventListener('input', () => {
+    MM.vol = parseFloat(volInp.value);
+    volVal.textContent = `${Math.round(MM.vol * 100)}%`;
+    if(mmMasterGain && audioCtx) mmMasterGain.gain.setTargetAtTime(MM.vol, audioCtx.currentTime, 0.05);
+    poke();
+  });
+
+  const pitchInp = document.getElementById('mmPitch');
+  const pitchVal = document.getElementById('mmPitchVal');
+  pitchInp.addEventListener('input', () => {
+    MM.pitch = parseFloat(pitchInp.value);
+    pitchVal.textContent = `${Math.round(MM.pitch)} Hz`;
+    updateMmAudio();
+    poke();
+  });
+
+  updateFreqDisplay();
+}
+
+// Populate UI
+buildMindMachineUI();
+
+let lastGroup = '';
+const inputs = {};
+P.forEach(p => {
+  if(p.g !== lastGroup){
+    lastGroup = p.g;
+    const h = document.createElement('div');
+    h.className = 'grp mt-2.5 mb-1 text-[8.5px] uppercase text-neutral-500';
+    h.textContent = p.g;
+    body.appendChild(h);
+  }
+  const row = document.createElement('div');
+  row.className = 'mb-1';
+  row.innerHTML = `<div class="flex justify-between text-[10px] text-neutral-300"><span>${p.n}</span><span class="tabular-nums text-neutral-500" data-v></span></div>`;
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = p.min; inp.max = p.max; inp.step = (p.max - p.min) / 500; inp.value = p.v;
+  const out = row.querySelector('[data-v]');
+  const upd = () => {
+    S[p.k] = parseFloat(inp.value);
+    out.textContent = S[p.k].toFixed(p.max <= 0.1 ? 3 : 2);
+    dirty = true;
+    if(p.k === 'res') resize();
+    poke(); // Trigger auto-hide timer on adjustment
+  };
+  inp.addEventListener('input', upd);
+  row.appendChild(inp); body.appendChild(row);
+  inputs[p.k] = {inp, upd};
+  upd();
+});
+function setAll(obj){ for(const k in obj){ if(inputs[k]){ inputs[k].inp.value = obj[k]; inputs[k].upd(); } } }
+
+const PRESETS = {
+  inkblot:{uScale:1.9, uWarp:1.6, uDetail:0.9, uFocus:0.6, uVeins:0.25, uContrast:2.4, uInk:-0.05, uBlot:0.62,
+           uRange:1.05, uColor:0.12, uPersist:0.5, uFlow:0.35, uChurn:0.4, speed:0.22,
+           gCount:0.3, gSize:0.014, gMix3D:0.35, gOpacity:0.7, gColAmt:0.1, gCluster:0.6},
+  mist:{uScale:3.4, uWarp:2.4, uDetail:0.65, uFocus:0.85, uVeins:0.12, uContrast:0.75, uInk:0.05, uBlot:0.06,
+        uRange:0.45, uColor:0.22, uHue:0.58, uPersist:0.72, uFlow:0.8, uChurn:0.9, speed:0.18,
+        gCount:0.22, gSize:0.010, gMix3D:0.6, gOpacity:0.4, gThick:0.8, gLight:0.35, gCluster:0.3},
+  abyss:{uScale:2.6, uWarp:2.9, uDetail:0.95, uFocus:0.78, uVeins:0.5, uContrast:1.9, uInk:-0.22, uBlot:0.3,
+         uRange:0.95, uColor:0.45, uHue:0.52, uPersist:0.66, uFlow:0.9, uChurn:0.7, speed:0.26,
+         gCount:0.5, gSize:0.02, gMix3D:0.8, gOpacity:0.7, gColAmt:0.25, gHue:0.55, gSpin:0.7, gCluster:0.55},
+  tissue:{uScale:4.2, uWarp:1.2, uDetail:1.0, uFocus:0.55, uVeins:0.85, uContrast:1.3, uInk:0.12, uBlot:0.18,
+          uRange:0.62, uColor:0.5, uHue:0.03, uPersist:0.45, uFlow:0.4, uChurn:0.3, speed:0.3,
+          gCount:0.6, gSize:0.008, gMix3D:0.25, gOpacity:0.5, gMorph:0.45, gEvolve:0.9, gCluster:0.75},
+  swarm:{uScale:2.1, uWarp:2.0, uDetail:0.7, uFocus:0.8, uVeins:0.2, uContrast:1.1, uInk:0.06, uBlot:0.1,
+         uRange:0.5, uColor:0.18, uPersist:0.62, uFlow:0.6, uChurn:0.5, speed:0.24,
+         gCount:1.0, gSize:0.011, gSizeVar:0.85, gMix3D:0.65, gOpacity:0.7, gThick:1.0,
+         gDrift:1.1, gSpin:0.9, gEvolve:0.8, gMorph:0.3, gColAmt:0.2, gCluster:0.5},
+};
+document.querySelectorAll('[data-preset]').forEach(b =>
+  b.addEventListener('click', () => { setAll(PRESETS[b.dataset.preset]); reseed(); poke(); }));
+
+let paused = false;
+const pauseBtn = document.getElementById('pause');
+pauseBtn.addEventListener('click', () => { paused = !paused; dirty = true; pauseBtn.textContent = paused ? 'Play' : 'Pause'; poke(); });
+function reseed(){ seed = Math.random() * 100; gSeed = Math.random() * 100; reseedInstances(); dirty = true; poke(); }
+document.getElementById('rnd').addEventListener('click', reseed);
+document.getElementById('save').addEventListener('click', () => {
+  canvas.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'pareidolia.png'; a.click(); });
+});
+const ui = document.getElementById('ui');
+document.getElementById('collapse').addEventListener('click', e => {
+  const hid = body.style.display === 'none';
+  body.style.display = hid ? 'block' : 'none';
+  e.target.textContent = hid ? '–' : '+';
+  poke();
+});
+addEventListener('keydown', e => {
+  if(e.code === 'KeyH') ui.classList.toggle('hidden');
+  if(e.code === 'Space'){ e.preventDefault(); pauseBtn.click(); }
+  if(e.code === 'KeyR') reseed();
+  poke();
+});
+
+// Trigger auto-hide on initial load
+poke();
+
+let mx = innerWidth * 0.5, my = innerHeight * 0.5, tx = mx, ty = my;
+addEventListener('pointermove', e => { tx = e.clientX; ty = innerHeight - e.clientY; dirty = true; });
+
+function resize(){
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  W = Math.max(2, Math.floor(innerWidth * dpr * S.res));
+  H = Math.max(2, Math.floor(innerHeight * dpr * S.res));
+  if(canvas.width === W && canvas.height === H && targets.length === 2) return;
+  canvas.width = W; canvas.height = H;
+  targets.forEach(t => { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); });
+  targets = [makeTarget(W, H), makeTarget(W, H)];
+  dirty = true;
+}
+addEventListener('resize', resize);
+resize();
+
+/* ============================ RENDER ============================ */
+function ucache(p){ if(!p._l){ p._l = new Map(); p._v = new Map(); } return p; }
+[pMain, pPres, pShape].forEach(ucache);
+function loc(p, n){
+  let l = p._l.get(n);
+  if(l === undefined){ l = gl.getUniformLocation(p, n); p._l.set(n, l); }
+  return l;
+}
+function u1f(p, n, v){
+  if(p._v.get(n) === v) return;
+  p._v.set(n, v);
+  gl.uniform1f(loc(p, n), v);
+}
+function u1i(p, n, v){
+  if(p._v.get(n) === v) return;
+  p._v.set(n, v);
+  gl.uniform1i(loc(p, n), v);
+}
+function u2f(p, n, a, b){
+  const c = p._v.get(n);
+  if(c !== undefined && c[0] === a && c[1] === b) return;
+  p._v.set(n, [a, b]);
+  gl.uniform2f(loc(p, n), a, b);
+}
+
+const MAIN_U = ['uScale','uWarp','uDetail','uFocus','uContrast','uInk','uBlot','uVeins','uColor','uHue',
+                'uPersist','uFlow','uRange','uGaze','uChurn','uEchoBlur','uDecayDrift','uLumHold'];
+const SHAPE_U = [['uSize','gSize'],['uSizeVar','gSizeVar'],['uDrift','gDrift'],['uSpin','gSpin'],
+                 ['uEvolve','gEvolve'],['uMorph','gMorph'],['uPersp','gPersp'],['uThick','gThick'],
+                 ['uOpacity','gOpacity'],['uLight','gLight'],['uColAmt','gColAmt'],['uHue','gHue'],
+                 ['uCluster','gCluster']];
+
+let T = 0, last = performance.now(), ping = 0;
+let calmFrames = 0;
+const FRAME_MS = 1000 / 60;
+
+function frame(now){
+  requestAnimationFrame(frame);
+
+  let elapsed = now - last;
+  if(elapsed < FRAME_MS - 0.6) return;
+  last = now;
+
+  const dt = Math.min(0.05, elapsed / 1000);
+  if(!paused) T += dt * S.speed * 1.1;
+
+  const pmx = mx, pmy = my;
+  mx += (tx - mx) * 0.05; my += (ty - my) * 0.05;
+  if(Math.abs(mx - pmx) > 0.01 || Math.abs(my - pmy) > 0.01) dirty = true;
+
+  if(paused && !dirty){ calmFrames++; } else { calmFrames = 0; dirty = false; }
+  const heavy = calmFrames < 90;
+
+  const src = targets[ping], dst = targets[1 - ping];
+
+  if(heavy){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, W, H);
+    gl.bindVertexArray(quadVao);
+    gl.useProgram(pMain);
+    u2f(pMain, 'uRes', W, H);
+    u1f(pMain, 'uTime', T);
+    u1f(pMain, 'uSeed', seed);
+    u2f(pMain, 'uMouse', mx / innerWidth * W, my / innerHeight * H);
+    for(let i = 0; i < MAIN_U.length; i++) u1f(pMain, MAIN_U[i], S[MAIN_U[i]]);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    u1f(pMain, 'uPrev', 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if(S.gCount > 0.001 && S.gOpacity > 0.001){
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(pShape);
+      u2f(pShape, 'uRes', W, H);
+      u1f(pShape, 'uTime', T * 3.2);
+      u1f(pShape, 'uAspect', W / H);
+      u1f(pShape, 'uSeedG', gSeed);
+      for(let i = 0; i < SHAPE_U.length; i++) u1f(pShape, SHAPE_U[i][0], S[SHAPE_U[i][1]]);
+      const m3 = S.gMix3D, base = MAXPER * S.gCount;
+      for(let i = 0; i < TYPES.length; i++){
+        const T2 = TYPES[i];
+        const mix = T2.d3 ? m3 : (1 - m3);
+        let n = Math.round(base * T2.w * (0.35 + 1.3 * mix));
+        if(n < 1) continue;
+        if(n > MAXPER) n = MAXPER;
+        gl.bindVertexArray(T2.vao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, T2.count, n);
+      }
+      gl.disable(gl.BLEND);
+      gl.bindVertexArray(quadVao);
+    }
+  } else {
+    gl.bindVertexArray(quadVao);
+  }
+
+  // Calculate instantaneous Mind Machine strobe value (locked to audio time when active)
+  const tSec = audioCtx && audioCtx.state === 'running' ? audioCtx.currentTime : now / 1000;
+  
+  // Add half-frame centering offset (0.5 / 60s = 0.00833s) to prevent any 1-frame boundary jitter on 60Hz/120Hz displays!
+  const visualPulse = getMmPulse(tSec + 0.00833);
+  const mmFlash = MM.active ? visualPulse * MM.opacity : 0.0;
+
+  // Modulate audio gain and filters with sample accuracy and ZERO lag
+  if(MM.active && mmNodes.modGain && audioCtx && audioCtx.state === 'running'){
+    const nowAudio = audioCtx.currentTime;
+    const audioPulse = getMmPulse(nowAudio + 0.00833);
+    
+    let targetGain = audioPulse;
+    if(MM.soundType === 'harmonic' || MM.soundType === 'chords' || MM.soundType === 'drone') {
+      targetGain = (0.15 + 0.85 * audioPulse) * 0.85;
+    } else if(MM.soundType === 'surf') {
+      targetGain = 0.12 + 0.88 * audioPulse;
+      if(mmNodes.filter) {
+        mmNodes.filter.frequency.setValueAtTime(mmNodes.filter.frequency.value, nowAudio);
+        mmNodes.filter.frequency.linearRampToValueAtTime(150 + 500 * audioPulse, nowAudio + 0.015);
+      }
+    } else if(MM.soundType === 'pulse_synth') {
+      targetGain = audioPulse;
+      if(mmNodes.filter) {
+        mmNodes.filter.frequency.setValueAtTime(mmNodes.filter.frequency.value, nowAudio);
+        mmNodes.filter.frequency.linearRampToValueAtTime(200 + 1000 * audioPulse, nowAudio + 0.015);
+      }
+    } else if(MM.soundType === 'binaural') {
+      targetGain = 0.9 + 0.1 * audioPulse; // Binaural beats remain continuous so the brainstem synthesizes the beat
+    }
+    
+    // Crisp, lag-free linear ramp over the 15ms frame interval prevents clicks while keeping 100% exact synchronization
+    mmNodes.modGain.gain.setValueAtTime(mmNodes.modGain.gain.value, nowAudio);
+    mmNodes.modGain.gain.linearRampToValueAtTime(targetGain, nowAudio + 0.015);
+  }
+
+  // pass 3 — present (always runs every frame so Mind Machine strobe never stutters)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  gl.useProgram(pPres);
+  u2f(pPres, 'uRes', W, H);
+  u1f(pPres, 'uTime', now / 1000);
+  u1f(pPres, 'uGrain', S.uGrain);
+  u1f(pPres, 'uSharp', S.uSharp);
+  u1f(pPres, 'uVig', S.uVig);
+  
+  // Send Mind Machine uniforms to present shader
+  u1f(pPres, 'uMmFlash', mmFlash);
+  u1i(pPres, 'uMmBlend', MM.blend);
+  const colLoc = loc(pPres, 'uMmColor');
+  gl.uniform3f(colLoc, MM.color[0], MM.color[1], MM.color[2]);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, heavy ? dst.tex : targets[ping].tex);
+  u1f(pPres, 'uTex', 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  if(heavy) ping = 1 - ping;
+}
+gl.disable(gl.DEPTH_TEST);
+gl.disable(gl.BLEND);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
